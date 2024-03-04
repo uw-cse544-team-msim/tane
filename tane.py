@@ -1,4 +1,4 @@
-'''
+"""
 Implementation of the Functional Dependency Canonical Cover Miner TANE as described in:
 [1] Hutala et al. - TANE: An Efficient Algorithm for Discovering Functional Approximate Dependencies. 1999.
 
@@ -16,10 +16,11 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
-'''
+"""
 
 import sys
 import time
+import pandas as pd
 from fca.defs.patterns.hypergraphs import TrimmedPartitionPattern
 from fca.io.transformers import List2PartitionsTransformer
 from itertools import combinations
@@ -30,39 +31,55 @@ try:
 except ImportError:
     pass
 
+
 ##########################################################################################
 ## UTILS
 ##########################################################################################
 def read_db(path):
+    """
+    Read the database and create initial partitions
+    hashes: Map storing unique attribute values and their corresponding tuples
+            {col_index: {value: row_index}}
+    returns: A list of partitions for each attribute
+    """
+    data = pd.read_csv(path)
     hashes = {}
-    with open(path, 'r') as fin:
-        for t, line in enumerate(fin):
-            line = line.strip()
-            if line == '':
-                break
-            for i, s in enumerate(line.split(',')):
-                hashes.setdefault(i, {}).setdefault(s, set([])).add(t)# [(i, s)] = len(hashes)
-        return [PPattern.fix_desc(list(hashes[k].values())) for k in sorted(hashes.keys())]
+    for i, col in enumerate(data.columns):
+        for t, val in enumerate(data[col]):
+            s = str(val)  # Convert values to string to ensure consistency
+            hashes.setdefault(i, {}).setdefault(s, set()).add(t)
+    return [PPattern.fix_desc(list(hashes[k].values())) for k in sorted(hashes.keys())]
+
 
 def tostr(atts):
-    return ''.join([chr(65+i) for i in atts])
+    """
+    Converts attribute indices to a string representation (e.g., 0, 1, 2 -> 'ABC')
+    atts: List of attribute indices
+    returns: Concatenated string of capitalized letters representing attributes
+    """
+    return ''.join([chr(65 + i) for i in atts])
+
 
 ##########################################################################################
 ## CLASSES
 ##########################################################################################
 class PPattern(TrimmedPartitionPattern):
-    '''
+    """
     Represents the Stripped Partition
-    '''
+    """
+
     @classmethod
     def intersection(cls, desc1, desc2):
-        '''
-        Procedure STRIPPED_PRODUCT defined in [1]
-        '''
+        """
+        Combines two partitions to find common tuples. Procedure STRIPPED_PRODUCT defined in [1].
+        desc1, desc2: Descriptors of the partitions to intersect
+        returns: A new partition representing the intersection
+        """
         new_desc = []
-        T = {}
-        S = {}
+        T = {}  # Map each tuple t to the column index i of in desc1 
+        S = {}  # Collects tuples t that are common to both desc1 and desc2 partitions
         for i, k in enumerate(desc1):
+            # i: col index, k: col, t: tuples in a column
             for t in k:
                 T[t] = i
             S[i] = set([])
@@ -75,11 +92,12 @@ class PPattern(TrimmedPartitionPattern):
                     if len(S[T[t]]) > 1:
                         new_desc.append(S[T[t]])
                     S[T[t]] = set([])
+                    # Reset the set in S for subsequent iterations
         return new_desc
 
 
 class PartitionsManager(object):
-    '''
+    """
     Manages the cache of already calcualted partitions.
     [1] is not very specific on how to manage partititions and memory.
     Our solution is this class where partitions are registered and cached
@@ -91,41 +109,46 @@ class PartitionsManager(object):
     Only 3 phases have to be available at all time, the current, the previous and the next.
     As such, purge_old_level purges the cache of unused levels.
     Purge cache is called at the end of each TANE phase.
-    '''
+    """
+
     def __init__(self, T):
-        '''
+        """
         Initializes the cache
-        '''
+        """
         self.T = T
-        self.cache = {0:None, 1:{(i,):j for i, j in enumerate(T)}}
+        self.cache = {0: None, 1: {(i,): j for i, j in enumerate(T)}}
         self.current_level = 1
-    
+
     def new_level(self):
-        '''
+        """
         Creates a cache for the new level
-        '''
+        """
         self.current_level += 1
         self.cache[self.current_level] = {}
-    
+
     def purge_old_level(self):
-        '''
+        """
         Memory wipe of unused cache
-        '''
-        del self.cache[self.current_level-2]
+        """
+        del self.cache[self.current_level - 2]
 
     def register_partition(self, X, X0, X1):
-        '''
-        Registers partition of attributes in X, using partitions 
+        """
+        Registers partition of attributes in X, using partitions
         already calculated of attributes in X0 and X1
-        '''
+        """
         self.cache[len(X)][X] = PPattern.intersection(self.cache[len(X0)][X0], self.cache[len(X1)][X1])
 
     def check_fd(self, X, y):
-        '''
-        Main difference with [1], we do not check using procedure "e" 
+        """
+        Main difference with [1], we do not check using procedure "e"
         to check and FD, but we use partition subsumption
         Seems more efficient
-        '''
+
+        X: Attribute set
+        y: Attribute to check dependency against
+        returns: True if X functionally determines y, False otherwise
+        """
         if not bool(X):
             return False
         left = self.cache[len(X)][X]
@@ -134,20 +157,24 @@ class PartitionsManager(object):
     def is_superkey(self, X):
         return not bool(self.cache[len(X)][X])
 
+
 class rdict(dict):
-    '''
-    Recursive dictionary implementing Cplus
-    '''
+    """
+    Recursive dictionary implementing Cplus to efficiently search for functional dependencies
+    """
+
     def __init__(self, *args, **kwargs):
         super(rdict, self).__init__(*args, **kwargs)
         self.itemlist = super(rdict, self).keys()
+
     def __getitem__(self, key):
         if key not in self:
             self[key] = self.recursive_search(key)
         return super(rdict, self).__getitem__(key)
 
     def recursive_search(self, key):
-        return reduce(set.intersection, [self[tuple(key[:i]+key[i+1:])] for i in range(len(key))])
+        return reduce(set.intersection, [self[tuple(key[:i] + key[i + 1:])] for i in range(len(key))])
+
 
 ##########################################################################################
 ## PROCEDURES
@@ -163,7 +190,7 @@ def calculate_e(X, XA, R, checker):
         return -1
     X = checker.cache[len(X)][X]
     XA = checker.cache[len(XA)][XA]
-    
+
     for c in XA:
         T[next(iter(c))] = len(c)
     for c in X:
@@ -171,79 +198,89 @@ def calculate_e(X, XA, R, checker):
         for t in c:
             m = max(m, T.get(t, 0))
         e += len(c) - m
-    return float(e)/len(R)
+    return float(e) / len(R)
+
 
 def prefix_blocks(L):
-    '''
+    """
     Procedure PREFIX_BLOCKS described in [1]
-    '''
+    """
     blocks = {}
     for atts in L:
-        blocks.setdefault(atts[:-1],[]).append(atts)
+        blocks.setdefault(atts[:-1], []).append(atts)
     return blocks.values()
+
 
 ##########################################################################################
 ## TANE ALGORITHM
 ##########################################################################################
 
 class TANE(object):
-    '''
+    """
     As seen on TV [1]
-    '''
+    """
+
     def __init__(self, T):
+        """
+        T: Initial partitions
+        rules: Stores discovered functional dependencies
+        Cplus: A structure holding potential dependencies for the set X based on previous calculations.
+        """
         self.T = T
         self.rules = []
 
         self.pmgr = PartitionsManager(T)
         self.R = range(len(T))
-        
 
         self.Cplus = rdict()
         self.Cplus[tuple([])] = set(self.R)
 
-
     def compute_dependencies(self, L):
-        '''
+        """
         Procedure COMPUTE_DEPENDENCIES described in [1]
-        '''
+        L: List of attribute sets to check for dependencies in LFS
+        """
         for X in L:
             for y in self.Cplus[X].intersection(X):
                 a = X.index(y)
-                LHS = X[:a]+X[a+1:]
+                LHS = X[:a] + X[a + 1:]
                 if self.pmgr.check_fd(LHS, y):
                     self.rules.append((LHS, y))
                     self.Cplus[X].remove(y)
                     map(self.Cplus[X].remove, filter(lambda i: i not in X, self.Cplus[X]))
 
     def prune(self, L):
-        '''
+        """
         Procedure PRUNE described in [1]
-        '''
+        Removes attribute sets that cannot have any more dependencies discovered
+        L: List of attribute sets to check for dependencies in LFS
+        """
         clean_idx = set([])
         for X in L:
             if not bool(self.Cplus[X]):
                 clean_idx.add(X)
-            if self.pmgr.is_superkey(X): # Is Superkey, since it's a stripped partition, then it's an empty set
+            if self.pmgr.is_superkey(X):  # Is Superkey, since it's a stripped partition, then it's an empty set
                 for y in filter(lambda x: x not in X, self.Cplus[X]):
-                    if y in reduce(set.intersection, [self.Cplus[tuple(sorted(X[:b]+X[b+1:]+(y,)))] for b in range(len(X))]):
+                    if y in reduce(set.intersection,
+                                   [self.Cplus[tuple(sorted(X[:b] + X[b + 1:] + (y,)))] for b in range(len(X))]):
                         self.rules.append((X, y))
                 clean_idx.add(X)
         for X in clean_idx:
             L.remove(X)
 
     def prefix_blocks(self, L):
-        '''
+        """
         Procedure PREFIX_BLOCKS described in [1]
-        '''
+        """
         blocks = {}
         for atts in L:
-            blocks.setdefault(atts[:-1],[]).append(atts)
+            blocks.setdefault(atts[:-1], []).append(atts)
         return blocks.values()
 
     def generate_next_level(self, L):
-        '''
+        """
         Procedure GENERATE_NEXT_LEVEL described in [1]
-        '''
+        """
         self.pmgr.new_level()
         next_L = set([])
         for k in prefix_blocks(L):
@@ -252,40 +289,57 @@ class TANE(object):
                     X = i + (j[-1],)
                 else:
                     X = j + (i[-1],)
-                if all(X[:a]+X[a+1:] in L for a, x in enumerate(X)):
+                if all(X[:a] + X[a + 1:] in L for a, x in enumerate(X)):
                     next_L.add(X)
                     # WE ADD THIS LINE, SEEMS A BETTER ALTERNATIVE TO CALCULATE THE PARTITION HERE WHEN
                     # WE HAVE REFERENCES TO BOTH PARTITIONS USED TO CALCULATE IT
-                    self.pmgr.register_partition(X, i, j) 
+                    self.pmgr.register_partition(X, i, j)
         return next_L
 
     def memory_wipe(self):
-        '''
+        """
         FREE SOME MEMORY!!!
-        '''
+        """
         self.pmgr.purge_old_level()
 
     def run(self):
-        '''
+        """
         Procedure TANE in [1]
-        '''
+        """
         L1 = set([tuple([i]) for i in self.R])
         L = [None, L1]
-        l = 1 
+        l = 1
         while bool(L[l]):
             self.compute_dependencies(L[l])
             self.prune(L[l])
             L.append(self.generate_next_level(L[l]))
-            l = l+1
+            l = l + 1
             # MEMORY WIPE
-            L[l-1] = None 
+            L[l - 1] = None
             self.memory_wipe()
+
 
 if __name__ == "__main__":
     T = read_db(sys.argv[1])
     tane = TANE(T)
     t0 = time.time()
     tane.run()
-    print ("\t=> Execution Time: {} seconds".format(time.time()-t0))
-    print ('\t=> {} Rules Found'.format(len(tane.rules)))
-    
+    df = pd.read_csv(sys.argv[1])
+    df_columns = df.columns.to_list()
+
+    print("\t=> Execution Time: {} seconds".format(time.time() - t0))
+    print('\t=> {} Rules Found'.format(len(tane.rules)))
+
+    rule_strings = []
+    for lhs, rhs in tane.rules:
+        lhs_names = [df_columns[i] for i in lhs]
+        rhs_name = df_columns[rhs]
+        rule_str = "{" + ", ".join(lhs_names) + "} -> {" + rhs_name + "}"
+        rule_strings.append(rule_str)
+
+    combined_rules = ", ".join(rule_strings)
+
+    rules_df = pd.DataFrame([combined_rules], columns=['Functional Dependencies'])
+    rules_df.to_csv('functional_dependencies.csv', index=False)
+
+    print("Functional dependency rules saved to functional_dependencies.csv")
